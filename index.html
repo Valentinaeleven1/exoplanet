@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Exoplanet Solar System Simulator v4</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #000; overflow: hidden; font-family: sans-serif; }
+canvas { display: block; }
+#ui { position: absolute; top: 12px; left: 12px; color: #ccc; font-size: 12px; background: rgba(0,0,0,0.65); border: 0.5px solid rgba(255,255,255,0.15); border-radius: 8px; padding: 10px 14px; width: 215px; }
+#ui h2 { color: #fff; font-size: 13px; font-weight: 500; margin-bottom: 8px; }
+#ui .label { color: #aaa; font-size: 11px; margin-top: 6px; }
+#ui .val { color: #ffd; font-size: 11px; font-weight: 500; }
+#info { position: absolute; bottom: 12px; left: 12px; color: #aaa; font-size: 11px; background: rgba(0,0,0,0.55); border: 0.5px solid rgba(255,255,255,0.1); border-radius: 8px; padding: 8px 12px; line-height: 1.7; }
+#legend { position: absolute; top: 12px; right: 12px; color: #ccc; font-size: 11px; background: rgba(0,0,0,0.65); border: 0.5px solid rgba(255,255,255,0.15); border-radius: 8px; padding: 10px 14px; width: 178px; }
+#legend h2 { color: #fff; font-size: 12px; font-weight: 500; margin-bottom: 6px; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; vertical-align: middle; }
+.row { margin: 3px 0; }
+#timebar { margin-top: 8px; }
+#timebar label { font-size: 11px; color: #aaa; }
+#timeslider { width: 100%; margin-top: 4px; }
+#resetbtn { margin-top: 8px; width: 100%; padding: 5px; background: rgba(255,200,80,0.15); border: 0.5px solid rgba(255,200,80,0.4); color: #ffc850; border-radius: 6px; cursor: pointer; font-size: 11px; }
+#resetbtn:hover { background: rgba(255,200,80,0.25); }
+.zrow { display: flex; align-items: center; gap: 5px; margin: 3px 0; font-size: 10px; color: #bbb; }
+.zswatch { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="ui">
+  <h2>⭐ Exosystem Simulator</h2>
+  <div class="label">Star type</div><div class="val">G2 (Sun-like)</div>
+  <div class="label">Simulation time</div><div class="val" id="timeVal">0 Myr</div>
+  <div class="label">Planets formed</div><div class="val" id="planetCount">0</div>
+  <div id="timebar">
+    <label>Time speed</label>
+    <input id="timeslider" type="range" min="0" max="5" step="1" value="2">
+  </div>
+  <button id="resetbtn">↺ Reset simulation</button>
+  <div class="label" style="margin-top:8px;">Selected planet</div>
+  <div class="val" id="planetInfo">—</div>
+</div>
+
+<div id="legend">
+  <h2>Habitable zone map</h2>
+  <div class="zrow"><div class="zswatch" style="background:rgba(255,60,0,0.7)"></div>Hot zone &lt;0.84 AU</div>
+  <div class="zrow"><div class="zswatch" style="background:rgba(255,160,40,0.7)"></div>Opt. inner 0.84–0.95</div>
+  <div class="zrow"><div class="zswatch" style="background:rgba(60,200,100,0.7)"></div>Conservative HZ 0.95–1.40</div>
+  <div class="zrow"><div class="zswatch" style="background:rgba(60,120,255,0.7)"></div>Opt. outer 1.40–1.70</div>
+  <div class="zrow"><div class="zswatch" style="background:rgba(140,190,255,0.7)"></div>Frost / freeze &gt;1.70 AU</div>
+  <hr style="border:0.5px solid rgba(255,255,255,0.1);margin:6px 0;">
+  <h2 style="margin-top:2px;">Planet states</h2>
+  <div class="row"><span class="dot" style="background:#4a9eff;"></span>Ocean world</div>
+  <div class="row"><span class="dot" style="background:#7cbb5a;"></span>Habitable</div>
+  <div class="row"><span class="dot" style="background:#cc5533;"></span>Hot rock</div>
+  <div class="row"><span class="dot" style="background:#5588cc;"></span>Gas giant</div>
+  <div class="row"><span class="dot" style="background:#aaccff;"></span>Frozen world</div>
+  <hr style="border:0.5px solid rgba(255,255,255,0.1);margin:6px 0;">
+  <div style="color:#888;font-size:10px;">Drag star to advance time<br>Drag planets to reposition</div>
+</div>
+
+<div id="info">
+  <b style="color:#ffd">Controls:</b><br>
+  🌀 Drag the star — time passes, planets form<br>
+  🪐 Drag planet inward — ocean evaporates, heats up<br>
+  🌊 Drag planet outward — becomes gas giant or freezes<br>
+  🌡 Closer to star = faster spin + higher temperature
+</div>
+
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let W, H, cx, cy;
+function resize() { W = canvas.width = window.innerWidth; H = canvas.height = window.innerHeight; cx = W/2; cy = H/2; }
+resize();
+window.addEventListener('resize', resize);
+
+const STAR_R = 52;
+const AU_PX = 130;
+const K_ORBIT = 0.012; // ω at 1 AU (rad/frame, timeSpeed=1) — Kepler III: ω ∝ a^-1.5
+function keplerOmega(au) { return K_ORBIT / Math.pow(Math.max(au, 0.05), 1.5); }
+function pxToAu(px) { return px / AU_PX; }
+
+const ZONES = [
+  { inner: 0,    outer: 0.84, color: 'rgba(255,50,0,0.07)',    label: 'Hot zone',         tempLabel: '>700 K', labelColor: 'rgba(255,120,60,0.85)' },
+  { inner: 0.84, outer: 0.95, color: 'rgba(255,150,30,0.07)',  label: 'Opt. inner HZ',    tempLabel: '370–700 K', labelColor: 'rgba(255,190,80,0.8)' },
+  { inner: 0.95, outer: 1.40, color: 'rgba(50,200,90,0.07)',   label: 'Conservative HZ',  tempLabel: '273–370 K', labelColor: 'rgba(80,220,120,0.9)' },
+  { inner: 1.40, outer: 1.70, color: 'rgba(50,100,255,0.07)',  label: 'Opt. outer HZ',    tempLabel: '220–273 K', labelColor: 'rgba(100,160,255,0.85)' },
+  { inner: 1.70, outer: 3.5,  color: 'rgba(120,170,255,0.05)', label: 'Frost line',        tempLabel: '<220 K', labelColor: 'rgba(160,200,255,0.75)' },
+];
+
+function auToR(au) { return au * AU_PX; }
+
+let coronaPhase = 0;
+let starSpin = 0, starDragAngle = 0, starSpinVel = 0, totalSpin = 0;
+let timeSpeed = 2, myrCount = 0;
+let draggingStar = false, draggingPlanet = null;
+let dragOffX = 0, dragOffY = 0;
+let selectedPlanet = null;
+let rubble = [], planets = [];
+let mouseDown = false;
+
+const PLANET_TEMPLATES = [
+  { baseR: 18, color: [100,160,255], oceanFrac: 0.65, name: 'Aquaria' },
+  { baseR: 20, color: [80,200,140],  oceanFrac: 0.45, name: 'Verdis'  },
+  { baseR: 16, color: [180,140,80],  oceanFrac: 0.55, name: 'Cerula'  },
+  { baseR: 22, color: [160,100,200], oceanFrac: 0.40, name: 'Iridis'  },
+  { baseR: 19, color: [100,180,200], oceanFrac: 0.60, name: 'Marinus' },
+];
+
+function getPlanetAU(p) { return p.distAU !== undefined ? p.distAU : pxToAu(Math.hypot(p.x - cx, p.y - cy)); }
+
+function getPlanetTemp(au) {
+  return Math.round(288 / Math.sqrt(au));
+}
+
+function getPlanetState(p) {
+  const au = getPlanetAU(p);
+  if (au < 0.84) return 'inferno';
+  if (au < 0.95) return 'hot';
+  if (au < 1.40) return 'habitable';
+  if (au < 1.70) return 'cold';
+  return 'frozen';
+}
+
+function getPlanetRadius(p) {
+  const state = getPlanetState(p);
+  const base = p.template.baseR;
+  const au = getPlanetAU(p);
+  if (state === 'inferno') return base * 0.62;
+  if (state === 'hot')     return base * 0.78;
+  if (state === 'frozen')  return base * (1.5 + Math.min((au - 1.70) / 1.5, 1.0));
+  return base;
+}
+
+function getOceanFrac(p) {
+  const au = getPlanetAU(p);
+  if (au < 0.84) return 0;
+  if (au < 0.95) return Math.max(0, (au - 0.84) / 0.11) * 0.12;
+  if (au < 1.20) return p.template.oceanFrac;
+  if (au < 1.40) return p.template.oceanFrac * 0.65;
+  if (au < 1.70) return 0.04;
+  return 0;
+}
+
+function getSelfRotationSpeed(p) {
+  const au = Math.max(0.1, getPlanetAU(p));
+  return 0.04 / Math.pow(au, 1.5);
+}
+
+function initRubble() {
+  rubble = [];
+  for (let i = 0; i < 120; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const dist = 100 + Math.random() * 320;
+    rubble.push({ angle, dist, size: 1 + Math.random() * 2.5, speed: 0.003 + Math.random() * 0.004, opacity: 0.5 + Math.random() * 0.5 });
+  }
+  planets = []; myrCount = 0; totalSpin = 0; selectedPlanet = null;
+}
+initRubble();
+
+function drawStarfield() {
+  if (!drawStarfield.stars) {
+    drawStarfield.stars = Array.from({length:220}, () => ({ x: Math.random(), y: Math.random(), r: Math.random()*1.2+0.3, a: 0.3+Math.random()*0.7 }));
+  }
+  drawStarfield.stars.forEach(s => {
+    ctx.beginPath();
+    ctx.arc(s.x*W, s.y*H, s.r, 0, Math.PI*2);
+    ctx.fillStyle = `rgba(255,255,255,${s.a})`;
+    ctx.fill();
+  });
+}
+
+function drawZones() {
+  ZONES.forEach((z, i) => {
+    const r1 = auToR(z.inner);
+    const r2 = auToR(z.outer);
+
+    ctx.beginPath();
+    ctx.arc(cx, cy, r2, 0, Math.PI*2);
+    ctx.arc(cx, cy, r1, 0, Math.PI*2, true);
+    ctx.fillStyle = z.color;
+    ctx.fill();
+
+    if (i < ZONES.length - 1) {
+      ctx.beginPath();
+      ctx.arc(cx, cy, r2, 0, Math.PI*2);
+      if (i === 1 || i === 3) {
+        ctx.setLineDash([6,5]);
+        ctx.strokeStyle = i===1 ? 'rgba(255,180,60,0.35)' : 'rgba(80,130,255,0.35)';
+      } else {
+        ctx.setLineDash([]);
+        ctx.strokeStyle = 'rgba(60,200,100,0.45)';
+      }
+      ctx.lineWidth = i===2 ? 1.5 : 0.8;
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    const midR = (r1 + r2) / 2;
+    if (midR > STAR_R + 20 && midR < Math.min(W, H) * 0.48) {
+      const labelAngle = -Math.PI / 2;
+      const lx = cx + Math.cos(labelAngle) * midR;
+      const ly = cy + Math.sin(labelAngle) * midR - 6;
+      ctx.font = '10px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillStyle = z.labelColor;
+      ctx.fillText(z.label, lx, ly);
+      ctx.font = '9px sans-serif';
+      ctx.fillStyle = z.labelColor.replace('0.', '0.6').replace('0.9', '0.6');
+      ctx.fillText(z.tempLabel, lx, ly + 12);
+      ctx.textAlign = 'left';
+    }
+  });
+}
+
+function drawStar() {
+  coronaPhase += 0.012;
+  const x = cx, y = cy;
+  for (let i = 5; i > 0; i--) {
+    const gr = ctx.createRadialGradient(x,y,STAR_R*0.8,x,y,STAR_R*(1+i*0.5));
+    gr.addColorStop(0, `rgba(255,200,80,${0.12/i})`);
+    gr.addColorStop(1, 'rgba(255,160,20,0)');
+    ctx.beginPath(); ctx.arc(x,y,STAR_R*(1+i*0.5),0,Math.PI*2); ctx.fillStyle=gr; ctx.fill();
+  }
+  for (let i = 0; i < 12; i++) {
+    const a = (i/12)*Math.PI*2 + coronaPhase + starSpin*0.1;
+    const len = STAR_R*(1.3+0.4*Math.sin(coronaPhase*3+i));
+    const wid = 0.08+0.05*Math.sin(coronaPhase+i*0.7);
+    ctx.beginPath();
+    ctx.moveTo(x+Math.cos(a-wid)*STAR_R, y+Math.sin(a-wid)*STAR_R);
+    ctx.lineTo(x+Math.cos(a)*(STAR_R+len), y+Math.sin(a)*(STAR_R+len));
+    ctx.lineTo(x+Math.cos(a+wid)*STAR_R, y+Math.sin(a+wid)*STAR_R);
+    ctx.closePath(); ctx.fillStyle='rgba(255,200,80,0.18)'; ctx.fill();
+  }
+  const grad = ctx.createRadialGradient(x-STAR_R*0.3,y-STAR_R*0.3,2,x,y,STAR_R);
+  grad.addColorStop(0,'#fff8e0'); grad.addColorStop(0.25,'#ffe060');
+  grad.addColorStop(0.6,'#ff9800'); grad.addColorStop(1,'#c84000');
+  ctx.beginPath(); ctx.arc(x,y,STAR_R,0,Math.PI*2); ctx.fillStyle=grad; ctx.fill();
+  ctx.save(); ctx.beginPath(); ctx.arc(x,y,STAR_R,0,Math.PI*2); ctx.clip();
+  for (let i = 0; i < 8; i++) {
+    const sa = starSpin*0.3+i*0.78, sd = STAR_R*0.3+(i%3)*STAR_R*0.2;
+    ctx.beginPath(); ctx.arc(x+Math.cos(sa)*sd, y+Math.sin(sa)*sd*0.6, 4+(i%3)*3, 0,Math.PI*2);
+    ctx.fillStyle='rgba(100,20,0,0.25)'; ctx.fill();
+  }
+  ctx.restore();
+  ctx.font='11px sans-serif'; ctx.fillStyle='rgba(255,230,150,0.9)'; ctx.textAlign='center';
+  ctx.fillText('G2 Star', x, y+STAR_R+16); ctx.textAlign='left';
+}
+
+function drawRubble() {
+  const visible = Math.max(0, rubble.length - planets.length*20);
+  for (let i = 0; i < visible; i++) {
+    const r = rubble[i];
+    r.angle += r.speed*(1+timeSpeed*0.1);
+    ctx.save();
+    ctx.globalAlpha = r.opacity*(1-Math.min(totalSpin/60,0.8));
+    ctx.fillStyle='#aaa';
+    ctx.beginPath();
+    ctx.arc(cx+Math.cos(r.angle)*r.dist, cy+Math.sin(r.angle)*r.dist, r.size, 0,Math.PI*2);
+    ctx.fill(); ctx.restore();
+  }
+}
+
+function drawPlanet(p) {
+  const au = getPlanetAU(p);
+  const dist = au * AU_PX;
+  const state = getPlanetState(p);
+  const R = getPlanetRadius(p);
+  const ocean = getOceanFrac(p);
+  const temp = getPlanetTemp(au);
+  const x = p.x, y = p.y;
+
+  ctx.beginPath(); ctx.arc(cx,cy,dist,0,Math.PI*2);
+  ctx.strokeStyle='rgba(255,255,255,0.04)'; ctx.lineWidth=0.5; ctx.stroke();
+
+  if (au < 1.0) {
+    const intensity = Math.max(0, 1-(au-0.3)/0.7);
+    const rg = ctx.createRadialGradient(x,y,R,x,y,R*3.5);
+    rg.addColorStop(0,`rgba(255,100,0,${intensity*0.35})`);
+    rg.addColorStop(1,'rgba(255,50,0,0)');
+    ctx.beginPath(); ctx.arc(x,y,R*3.5,0,Math.PI*2); ctx.fillStyle=rg; ctx.fill();
+  }
+
+  if (au > 1.70) {
+    const gg = ctx.createRadialGradient(x,y,R*0.7,x,y,R*2.5);
+    gg.addColorStop(0,'rgba(140,190,255,0.18)');
+    gg.addColorStop(1,'rgba(80,120,200,0)');
+    ctx.beginPath(); ctx.arc(x,y,R*2.5,0,Math.PI*2); ctx.fillStyle=gg; ctx.fill();
+  }
+
+  ctx.save(); ctx.beginPath(); ctx.arc(x,y,R,0,Math.PI*2); ctx.clip();
+
+  let baseColor;
+  if (state==='inferno') baseColor='#1a0800';
+  else if (state==='hot') { const t=p.template.color; baseColor=`rgb(${Math.floor(t[0]*0.7+60)},${Math.floor(t[1]*0.3)},${Math.floor(t[2]*0.2)})`; }
+  else if (state==='frozen') baseColor='#0d1a2e';
+  else { const t=p.template.color; baseColor=`rgb(${t[0]},${t[1]},${t[2]})`; }
+  ctx.fillStyle=baseColor; ctx.fillRect(x-R,y-R,R*2,R*2);
+
+  const rotA = p.selfAngle || 0;
+
+  if (state==='inferno') {
+    for (let i=0;i<5;i++) {
+      ctx.fillStyle='rgba(180,30,0,0.4)';
+      ctx.fillRect(x-R+(i/5+rotA*0.05)*R*2%R*2-R, y-R, R*0.3, R*2);
+    }
+  } else if (state==='frozen') {
+    ctx.fillStyle='rgba(180,210,255,0.3)';
+    ctx.fillRect(x-R,y-R,R*2,R*0.5);
+    ctx.fillRect(x-R,y+R*0.5,R*2,R*0.5);
+    for (let i=0;i<3;i++) {
+      ctx.fillStyle='rgba(140,180,240,0.2)';
+      ctx.fillRect(x-R, y-R*0.4+i*R*0.4, R*2, R*0.12);
+    }
+  } else {
+    for (let i=0;i<4;i++) {
+      const la = rotA + i*1.4, ld=R*0.3;
+      const lx=x+Math.cos(la)*ld, ly=y+Math.sin(la)*ld, ls=R*(0.2+(i%2)*0.2);
+      ctx.fillStyle=state==='hot'?'rgba(80,30,0,0.5)':'rgba(60,120,30,0.5)';
+      ctx.beginPath(); ctx.arc(lx,ly,ls,0,Math.PI*2); ctx.fill();
+    }
+  }
+
+  if (ocean>0) {
+    ctx.fillStyle=`rgba(30,100,220,${ocean*0.7})`; ctx.fillRect(x-R,y-R,R*2,R*2);
+    for (let i=0;i<3;i++) {
+      ctx.fillStyle=`rgba(80,160,255,${ocean*0.2})`;
+      ctx.fillRect(x-R+(i*0.3+rotA*0.02%0.3)*R*0.9,y-R,R*0.15,R*2);
+    }
+  }
+
+  if (state==='frozen') {
+    ctx.fillStyle='rgba(200,225,255,0.12)'; ctx.fillRect(x-R,y-R,R*2,R*2);
+  }
+
+  ctx.restore();
+
+  const atmColor = state==='frozen'?'rgba(160,200,255,0.45)':state==='inferno'?'rgba(255,80,0,0.4)':ocean>0.3?'rgba(100,200,255,0.3)':'rgba(200,200,200,0.15)';
+  const ag=ctx.createRadialGradient(x,y,R*0.82,x,y,R*1.12);
+  ag.addColorStop(0,'rgba(0,0,0,0)'); ag.addColorStop(1,atmColor);
+  ctx.beginPath(); ctx.arc(x,y,R*1.12,0,Math.PI*2); ctx.fillStyle=ag; ctx.fill();
+
+  ctx.beginPath(); ctx.arc(x,y,R,0,Math.PI*2);
+  ctx.strokeStyle='rgba(255,255,255,0.15)'; ctx.lineWidth=0.5; ctx.stroke();
+
+  ctx.font='10px sans-serif'; ctx.textAlign='center';
+  ctx.fillStyle='rgba(200,220,255,0.85)';
+  ctx.fillText(p.name, x, y+R+13);
+
+  const tempColor = temp>370?'#ff7744':temp>273?'#88ee88':temp>220?'#88aaff':'#aaccff';
+  ctx.font='9px sans-serif';
+  ctx.fillStyle=tempColor;
+  ctx.fillText(temp+'K', x, y+R+24);
+  ctx.textAlign='left';
+
+  if (selectedPlanet===p) {
+    ctx.beginPath(); ctx.arc(x,y,R+5,0,Math.PI*2);
+    ctx.strokeStyle='rgba(255,255,200,0.6)'; ctx.lineWidth=1.5;
+    ctx.setLineDash([4,4]); ctx.stroke(); ctx.setLineDash([]);
+  }
+}
+
+function tryFormPlanet() {
+  if (planets.length>=PLANET_TEMPLATES.length) return;
+  const threshold = 20+planets.length*25;
+  if (totalSpin>threshold) {
+    const t=PLANET_TEMPLATES[planets.length];
+    const angle=Math.random()*Math.PI*2;
+    const distAU=1.2+planets.length*0.42+Math.random()*0.2;
+    const distPx=distAU*AU_PX;
+    planets.push({
+      x: cx+Math.cos(angle)*distPx, y: cy+Math.sin(angle)*distPx,
+      angle, dist: distPx, distAU,
+      template: t, name: t.name, surfSeed: Math.random()*Math.PI*2,
+      selfAngle: 0
+    });
+  }
+}
+
+function orbitPlanets() {
+  planets.forEach(p => {
+    if (draggingPlanet===p) {
+      const dx=p.x-cx, dy=p.y-cy;
+      p.distAU = pxToAu(Math.hypot(dx,dy));
+      p.dist = p.distAU * AU_PX;
+      p.angle = Math.atan2(dy,dx);
+      p.selfAngle = (p.selfAngle||0) + getSelfRotationSpeed(p);
+      return;
+    }
+    // Kepler III: ω = K / a^1.5
+    const omega = keplerOmega(p.distAU) * (1 + timeSpeed * 0.35);
+    p.angle += omega;
+    p.x = cx + Math.cos(p.angle) * p.dist;
+    p.y = cy + Math.sin(p.angle) * p.dist;
+    p.selfAngle = (p.selfAngle||0) + getSelfRotationSpeed(p);
+  });
+}
+
+function updateUI() {
+  myrCount += timeSpeed*0.002;
+  document.getElementById('timeVal').textContent = myrCount.toFixed(1)+' Myr';
+  document.getElementById('planetCount').textContent = planets.length;
+  if (selectedPlanet) {
+    const au = getPlanetAU(selectedPlanet);
+    const state = getPlanetState(selectedPlanet);
+    const temp = getPlanetTemp(au);
+    const ocean = Math.round(getOceanFrac(selectedPlanet)*100);
+    const orbDeg = (keplerOmega(au) * (180/Math.PI) * 60).toFixed(1);
+    const stateStr={inferno:'🔥 Scorched',hot:'🌋 Hot desert',habitable:'🌊 Habitable',cold:'❄️ Cold',frozen:'🧊 Frozen gas'}[state];
+    document.getElementById('planetInfo').textContent=`${selectedPlanet.name} | ${stateStr} | ${temp}K | Ocean:${ocean}% | Orbit:${orbDeg}°/min`;
+  } else {
+    document.getElementById('planetInfo').textContent='— (click a planet)';
+  }
+}
+
+canvas.addEventListener('mousedown', e => {
+  mouseDown=true;
+  const dx=e.clientX-cx, dy=e.clientY-cy;
+  if (Math.hypot(dx,dy)<STAR_R+10) {
+    draggingStar=true; starDragAngle=Math.atan2(dy,dx); return;
+  }
+  for (let p of planets) {
+    if (Math.hypot(e.clientX-p.x,e.clientY-p.y)<getPlanetRadius(p)+8) {
+      draggingPlanet=p; selectedPlanet=p;
+      dragOffX=p.x-e.clientX; dragOffY=p.y-e.clientY; return;
+    }
+  }
+  selectedPlanet=null;
+});
+
+canvas.addEventListener('mousemove', e => {
+  if (!mouseDown) return;
+  if (draggingStar) {
+    const dx=e.clientX-cx, dy=e.clientY-cy;
+    const angle=Math.atan2(dy,dx);
+    let delta=angle-starDragAngle;
+    if (delta>Math.PI) delta-=Math.PI*2;
+    if (delta<-Math.PI) delta+=Math.PI*2;
+    starSpin+=delta*3; starSpinVel=delta*3;
+    totalSpin+=Math.abs(delta)*8;
+    starDragAngle=angle; tryFormPlanet();
+  }
+  if (draggingPlanet) {
+    draggingPlanet.x=e.clientX+dragOffX; draggingPlanet.y=e.clientY+dragOffY;
+    const dx=draggingPlanet.x-cx, dy=draggingPlanet.y-cy;
+    draggingPlanet.dist=Math.hypot(dx,dy);
+    draggingPlanet.distAU=pxToAu(draggingPlanet.dist);
+    draggingPlanet.angle=Math.atan2(dy,dx);
+  }
+});
+
+canvas.addEventListener('mouseup', () => { mouseDown=false; draggingStar=false; draggingPlanet=null; });
+canvas.addEventListener('touchstart', e=>{ e.preventDefault(); const t=e.touches[0]; canvas.dispatchEvent(new MouseEvent('mousedown',{clientX:t.clientX,clientY:t.clientY})); },{passive:false});
+canvas.addEventListener('touchmove',  e=>{ e.preventDefault(); const t=e.touches[0]; canvas.dispatchEvent(new MouseEvent('mousemove',{clientX:t.clientX,clientY:t.clientY})); },{passive:false});
+canvas.addEventListener('touchend',   e=>{ e.preventDefault(); canvas.dispatchEvent(new MouseEvent('mouseup')); },{passive:false});
+
+document.getElementById('timeslider').addEventListener('input', e=>{ timeSpeed=parseInt(e.target.value); });
+document.getElementById('resetbtn').addEventListener('click', initRubble);
+
+function loop() {
+  ctx.fillStyle='#000'; ctx.fillRect(0,0,W,H);
+  drawStarfield();
+  drawZones();
+  drawRubble();
+  orbitPlanets();
+  planets.forEach(drawPlanet);
+  drawStar();
+  updateUI();
+  requestAnimationFrame(loop);
+}
+loop();
+</script>
+</body>
+</html>
